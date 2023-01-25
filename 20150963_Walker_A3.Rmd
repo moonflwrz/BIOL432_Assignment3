@@ -1,0 +1,438 @@
+---
+title: "20150963_Walker_A3"
+author: "Charlie Walker"
+date: "2023-01-23"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+[[Link to GitHub Repository](https://github.com/moonflwrz/BIOL432_Assignment3.git)]
+
+The goal of this assignment is to become comfortable with discriminant analysis by conducting an LDA on the *Lythrum salicaria* dataset used previously in the PCA tutorial.
+
+Specifically, we're looking to determine which traits vary among genetic populations and growing sites.
+
+Let's start with some data integrity checks.
+
+### Part I: Data Exploration & QA/QC
+
+```{r 1.1_data-setup}
+#loading libraries
+library(ggplot2)
+library(dplyr)
+library(MASS)
+
+#importing data from github..
+vegDat<-read.csv(
+  "http://colauttilab.github.io/Data/ColauttiBarrett2013Data.csv"
+)
+
+```
+
+```{r 1.2_checkin-data}
+#inspecting integrity.. 
+complete.cases(vegDat) #missing data!
+dim(vegDat)
+str(vegDat)
+head(vegDat)
+```
+
+It looks like we've got a decent bit of missing data. Since our sample size is relatively small, let's stick to imputing the data as to not compromise the interpretation of the LDA.
+
+```{r 1.2_imputin}
+#Flwr
+Flwr<-vegDat %>% 
+  dplyr::select(
+    starts_with("Flwr")) %>% 
+  mutate(Flwr07=ifelse(
+    is.na(Flwr07),
+    mean(Flwr07, na.rm=T), Flwr07),
+    Flwr08=ifelse(
+    is.na(Flwr08),
+    mean(Flwr08, na.rm=T), Flwr08),
+    Flwr09=ifelse(
+    is.na(Flwr09),
+    mean(Flwr09, na.rm=T), Flwr09),
+    Flwr10=ifelse(
+    is.na(Flwr10),
+    mean(Flwr10, na.rm=T), Flwr10),
+    )
+
+#FVeg
+FVeg<-vegDat %>% 
+  dplyr::select(
+    starts_with("FVeg")) %>% 
+  mutate(FVeg07=ifelse(
+    is.na(FVeg07),
+    mean(FVeg07, na.rm=T), FVeg07),
+    FVeg08=ifelse(
+    is.na(FVeg08),
+    mean(FVeg08, na.rm=T), FVeg08),
+    FVeg09=ifelse(
+    is.na(FVeg09),
+    mean(FVeg09, na.rm=T), FVeg09),
+    FVeg10=ifelse(
+    is.na(FVeg10),
+    mean(FVeg10, na.rm=T), FVeg10),
+    )
+
+#InfMass
+InfMass<-vegDat %>% 
+  dplyr::select(
+    starts_with("InfMass")) %>% 
+  mutate(InfMass07=ifelse(
+    is.na(InfMass07),
+    mean(InfMass07, 
+         na.rm=T), InfMass07),
+    InfMass08=ifelse(
+    is.na(InfMass08),
+    mean(InfMass08, 
+         na.rm=T), InfMass08),
+    InfMass09=ifelse(
+    is.na(InfMass09),
+    mean(InfMass09, 
+         na.rm=T), InfMass09),
+    InfMass10=ifelse(
+    is.na(InfMass10),
+    mean(InfMass10, 
+         na.rm=T), InfMass10),
+    )
+```
+
+Next, let's check the normality of our three features; `Flwr`, `FVeg`, and `InfMass`.
+
+```{r 1.2_Flwr-Norm}
+#Flwr--------------------
+FlwrMod<-lm(Flwr10~Flwr07+
+              Flwr08+Flwr09,
+            data=Flwr)
+
+Flwr$Residuals<-residuals(FlwrMod)
+Flwr$Predict<-predict(FlwrMod)
+
+#Residuals
+qplot(x=Residuals, data=Flwr) +
+  stat_bin(bins=30)
+
+#Predict vs. Residuals
+qplot(x=Predict, y=Residuals,
+      data=Flwr)
+
+#QQplot
+qplot(sample=Residuals,
+      data=Flwr) +
+  stat_qq() +
+  stat_qq_line()
+```
+
+```{r 1.2_FVeg-Norm}
+#FVeg------------------------
+FVegMod<-lm(FVeg10~FVeg07+
+              FVeg08+FVeg09,
+            data=FVeg)
+
+FVeg$Residuals<-residuals(FVegMod)
+FVeg$Predict<-predict(FVegMod)
+
+#Residuals
+qplot(x=Residuals, data=FVeg) +
+  stat_bin(bins=30)
+
+#Predict vs. Residuals
+qplot(x=Predict, y=Residuals,
+      data=FVeg)
+
+#QQplot
+qplot(sample=Residuals,
+      data=FVeg) +
+  stat_qq() +
+  stat_qq_line()
+```
+
+```{r 1.2_InfMass-Norm}
+#InfMass----------------------
+MassMod<-lm(InfMass10~InfMass07+
+              InfMass08+InfMass09,
+            data=InfMass)
+
+InfMass$Residuals<-residuals(
+  MassMod)
+InfMass$Predict<-predict(MassMod)
+
+#Residuals
+qplot(x=Residuals, data=InfMass) +
+  stat_bin(bins=40)
+
+#Predict vs. Residuals
+qplot(x=Predict, y=Residuals,
+      data=InfMass)
+
+#QQplot
+qplot(sample=Residuals,
+      data=InfMass) +
+  stat_qq() +
+  stat_qq_line()
+```
+
+In general, both Flwr and FVeg are normally distributed (apart from data we imputed, note the lines in the Predict vs. Residual plots).
+
+InfMass has a positive skew, and some outliers.
+
+We could log-transform our data, but doing so results in a bunch of values becoming 'Inf', which is treated similarly to NAs- so we'd just be backtracking.
+
+Instead, let's try to sqrt-transform InfMass and see if that helps any..
+
+```{r 1.2_fixin-data}
+
+#New set w sqrt-transformed data
+sqrtMass<-InfMass %>% 
+  dplyr::select(1:4) %>% 
+  sqrt()
+
+sqrtMod<-lm(InfMass10~InfMass07+
+             InfMass08+InfMass09,
+           data=sqrtMass)
+
+sqrtMass$Residuals<-residuals(
+  sqrtMod)
+sqrtMass$Predict<-predict(
+  sqrtMod)
+
+#New Residual plot
+qplot(x=Residuals,
+      data=sqrtMass) +
+  stat_bin(bins=40)
+
+#New Resid vs. Predict plot
+qplot(x=Predict, y=Residuals,
+      data=sqrtMass)
+
+#New QQPlot
+qplot(sample=Residuals, 
+      data=sqrtMass) +
+  stat_qq() +
+  stat_qq_line()
+```
+
+That looks a tad bit better.\
+Let's scale our data.
+
+```{r 1.3_scalin-data}
+#Flwr
+FlwrVar<-Flwr %>%
+  dplyr::select(1:4) %>% 
+  mutate_all(scale)
+
+#FVeg
+FVegVar<-FVeg %>% 
+  dplyr::select(1:4) %>% 
+  mutate_all(scale)
+
+#InfMass
+InfMassVar<-sqrtMass %>% 
+  dplyr::select(1:4) %>% 
+  mutate_all(scale)
+```
+
+Normally, after going through our QA/QC, we'd then use a linear model to preform feature selection. We don't have to do that here, though.
+
+We've already worked with this model, and we know what our three features of interest are: `Flwr`, `FVeg`, and `InfMass`.
+
+Finally, let's make a separate dataset for our classifying variables.
+
+```{r include=F}
+
+LDAdat<-vegDat[,c(2,6,8:10,12:13,
+                  15:17,19:21,23)]
+
+LDAdat<-LDAdat %>%
+  mutate(
+    Flwr07=ifelse(is.na(Flwr07),
+                  mean(Flwr07,
+                       na.rm=T),
+                  Flwr07),
+    Flwr08=ifelse(is.na(Flwr08),
+                  mean(Flwr08,
+                       na.rm=T),
+                  Flwr08),
+    Flwr09=ifelse(is.na(Flwr09),
+                  mean(Flwr09,
+                       na.rm=T),
+                  Flwr09),
+    Flwr10=ifelse(is.na(Flwr10),
+                  mean(Flwr10,
+                       na.rm=T),
+                  Flwr10),
+    FVeg07=ifelse(is.na(FVeg07),
+                  mean(FVeg07,
+                       na.rm=T),
+                  FVeg07),
+    FVeg08=ifelse(is.na(FVeg08),
+                  mean(FVeg08,
+                       na.rm=T),
+                  FVeg08),
+    FVeg09=ifelse(is.na(FVeg09),
+                  mean(FVeg09,
+                       na.rm=T),
+                  FVeg09),
+    FVeg10=ifelse(is.na(FVeg10),
+                  mean(FVeg10,
+                       na.rm=T),
+                  FVeg10),
+    InfMass07=ifelse(is.na(
+      InfMass07),
+                  mean(InfMass07,
+                       na.rm=T),
+                  InfMass07),
+    InfMass08=ifelse(is.na(
+      InfMass08),
+                  mean(InfMass08,
+                       na.rm=T),
+                  InfMass08),
+    InfMass09=ifelse(is.na(
+      InfMass09),
+                  mean(InfMass09,
+                       na.rm=T),
+                  InfMass09),
+    InfMass10=ifelse(is.na(
+      InfMass10),
+                  mean(InfMass10,
+                       na.rm=T),
+                  InfMass10))
+
+```
+
+```{r 1.5_separate-dataset}
+
+#Classifying variables
+respSel<-vegDat %>% 
+  dplyr::select(2, 6)
+
+```
+
+Now we're ready to preform our LDAs.
+
+### Part II: LDA
+
+```{r 2.1_LDA}
+
+#FlwrLDA
+FlwrLDA_Site<-lda(x=FlwrVar,
+             grouping=
+               respSel$Site)
+FlwrLDA_Pop<-lda(x=FlwrVar,
+             grouping=
+               respSel$Pop)
+
+#FVegLDA
+FVegLDA_Site<-lda(x=FVegVar,
+             grouping=
+               respSel$Site)
+FVegLDA_Pop<-lda(x=FVegVar,
+             grouping=
+               respSel$Pop)
+
+#MassLDA
+MassLDA_Site<-lda(x=InfMassVar,
+             grouping=
+               respSel$Site)
+MassLDA_Pop<-lda(x=InfMassVar,
+             grouping=
+               respSel$Pop)
+
+```
+
+Recall that LD axes correspond to the number of categories related to the response variable minus 1.
+
+So, models grouped by `Pop` will have 4 LD axes, and models grouped by `Site` will have 2 LD axes (one for each growing site).
+
+Let's take a closer look at one of the models..
+
+```{r 2.3_explorin}
+summary(FlwrLDA_Pop)
+FlwrLDA_Pop$scaling
+```
+
+The `scaling` slice contains our factor loadings, or LD eigenvectors. Remember that LD eignevectors are calculated to distinguish groups in terms of features, whereas PC eignevectors are calculated to explain variation across features.
+
+```{r 2.4_predictions}
+#Flwr----
+#SITE-------------
+PredFlwr_Site<-predict(FlwrLDA_Site)
+FlwrSite<-data.frame(
+  Observed=as.factor(respSel$Site),
+  Predicted=PredFlwr_Site$class
+)
+table(FlwrSite)
+
+#POP------
+PredFlwr_Pop<-predict(FlwrLDA_Pop)
+FlwrPop<-data.frame(
+  Observed=as.factor(respSel$Pop),
+  Predicted=PredFlwr_Pop$class
+)
+table(FlwrPop)
+
+#FVeg----
+#SITE-----------
+PredFVeg_Site<-predict(FVegLDA_Site)
+FVegSite<-data.frame(
+  Observed=as.factor(respSel$Site),
+  Predicted=PredFVeg_Site$class
+)
+table(FVegSite)
+
+#POP--------------
+PredFVeg_Pop<-predict(FVegLDA_Pop)
+FVegPop<-data.frame(
+  Observed=as.factor(respSel$Pop),
+  Predicted=PredFVeg_Pop$class
+)
+table(FVegPop)
+
+#InfMass---
+#SITE-------------
+PredMass_Site<-predict(MassLDA_Site)
+MassSite<-data.frame(
+  Observed=as.factor(respSel$Site),
+  Predicted=PredMass_Site$class
+)
+table(MassSite)
+
+#POP--------------
+PredMass_Pop<-predict(MassLDA_Pop)
+MassPop<-data.frame(
+  Observed=as.factor(respSel$Pop),
+  Predicted=PredMass_Pop$class
+)
+table(MassPop)
+```
+
+Recall the results from the PCA tutorial. We found that PC1 distinguished genetic populations and PC2 distinguished growing site.. but we couldn't determine exactly what traits contributed to what axes of variation.
+
+Our projections suggested that PC1 was affected by all three traits, whereas PC2 was more affected by `Flwr` and `InfMass`.
+
+Our LDA indicated that for `Site`, LD1 was affected by `Flwr` & `FVeg` the most, whereas LD2 saw roughly equal affection for all three traits.
+
+For `Pop`,
+
+-   LD1 was affected by all three traits
+
+-   LD2 was affected by `Flwr` (pos) & `Fveg` (neg)
+
+-   LD3 was affected by `Flwr` (neg) & `FVeg` (pos)
+
+-   LD4 was affected by `Flwr` (pos) & `FVeg` (neg)
+
+As for what trait distinguished what predictor the best..
+
+-   `InfMass` distinguishes Genetic Population best
+
+-   `Flwr` distinguishes Growing Site best
+
+A possible hypothesis to explain these results could be:
+
+"Traits related to Flowering (`Flwr`) and traits related to vegetative growth (`FVeg`) are negatively correlated with each other, and thus will affect different axes"
